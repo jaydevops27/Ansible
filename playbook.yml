@@ -1,0 +1,95 @@
+- name: Checking and Stopping HAProxy if active
+  hosts: haproxy-host
+  gather_facts: true
+  serial: 1
+  vars:
+    ansible_ssh_private_key_file: "PEMKEY PATH"
+    ansible_user: ec2-user  # Specify the remote user here
+
+  tasks:
+    - name: Load PEM key from GitLab variable
+      set_fact:
+        pem_key: "{{ lookup('env', 'PEMKEY PATH') }}"
+    
+    - name: Exit if PEM key is not provided
+      fail:
+        msg: "GitLab PEM key not provided"
+      when: pem_key == 'PEMKEY PATH'
+
+    - name: Check HAProxy Status
+      command: "systemctl is-active haproxy"
+      register: haproxy_status
+      changed_when: false  # We want to see if the status has changed, not if the command succeeded or not
+
+    - name: Display HAProxy Status
+      debug:
+        msg: "HAProxy is {{ haproxy_status.stdout }}"
+
+    - name: Stop HAProxy if active
+      shell: "sudo systemctl stop haproxy"
+      register: stop_result
+      failed_when: stop_result.rc != 0
+      changed_when: stop_result.rc == 0
+      ignore_unreachable: yes
+      timeout: 60  # Increase timeout as needed
+      when: haproxy_status.stdout == "active"  and haproxy_status.rc == 0
+
+    - name: Verify HAProxy Status after stopping
+      command: "systemctl is-active haproxy"
+      register: haproxy_status_after_stop
+      changed_when: false  # We want to see if the status has changed, not if the command succeeded or not
+      failed_when: haproxy_status_after_stop.rc != 0 and haproxy_status_after_stop.stdout != "inactive"
+
+    - name: Display HAProxy Status after stopping
+      debug:
+        msg: "HAProxy is {{ haproxy_status_after_stop.stdout }}"
+
+    - name: Get current kernel version before update
+      command: "uname -r"
+      register: current_kernel_before
+      changed_when: false
+
+    - name: Update Kernel
+      command: sudo yum install git -y
+      become: true
+
+    - name: Reboot EC2 instance asynchronously
+      shell: "sleep 5 && sudo reboot"
+      async: 600  # Set the timeout for the asynchronous task (600 seconds or as needed)
+      poll: 0
+      ignore_errors: yes
+      register: reboot_result
+
+    - name: Wait for instance to become reachable
+      wait_for_connection:
+        delay: 60
+        timeout: 900
+
+    - name: Retry connection after reboot
+      command: echo "Trying to establish SSH connection..."
+      register: ssh_connection_result
+      until: ssh_connection_result.rc == 0
+      retries: 20
+      delay: 15
+
+    - name: Get current kernel version after update
+      command: "uname -r"
+      register: current_kernel_after
+      changed_when: false
+
+    - name: Display current kernel versions
+      debug:
+        msg: "Kernel version before update: {{ current_kernel_before.stdout }}, after update: {{ current_kernel_after.stdout }}"
+
+    - name: Start HAProxy after reboot
+      shell: "sudo systemctl start haproxy"
+
+    - name: Check HAProxy Status after starting
+      command: "systemctl is-active haproxy"
+      register: haproxy_status_after_start
+      changed_when: false
+      ignore_unreachable: true
+
+    - name: Display HAProxy Status after starting
+      debug:
+        msg: "HAProxy is {{ haproxy_status_after_start.stdout }}"
