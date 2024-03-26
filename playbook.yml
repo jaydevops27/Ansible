@@ -50,7 +50,7 @@
       changed_when: false
 
     - name: Update Kernel
-      command: sudo yum install git -y
+      command: sudo yum update kernal* -y
       become: true
 
     - name: Reboot EC2 instance asynchronously
